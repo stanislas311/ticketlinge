@@ -1,6 +1,12 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { connection } from "next/server";
+import type { Metadata } from "next";
 import { FormulaireConnexion } from "./formulaire-connexion";
+
+export const metadata: Metadata = {
+  title: "Connexion - Ticketlinge",
+};
 
 interface ProprietesPageConnexion {
   searchParams: Promise<{ [cle: string]: string | string[] | undefined }>;
@@ -11,6 +17,7 @@ async function ContenuFormulaireConnexion({
 }: {
   searchParams: Promise<{ [cle: string]: string | string[] | undefined }>;
 }) {
+  await connection();
   const parametres = await searchParams;
   const suivant =
     typeof parametres.suivant === "string" ? parametres.suivant : undefined;

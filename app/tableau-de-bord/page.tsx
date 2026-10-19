@@ -1,8 +1,14 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import { connection } from "next/server";
+import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { deconnexion } from "@/lib/actions/auth";
+
+export const metadata: Metadata = {
+  title: "Tableau de bord - Ticketlinge",
+};
 
 interface PressingLie {
   id: string;
@@ -32,6 +38,10 @@ function libelleRole(role: string): string {
 }
 
 async function ContenuTableauDeBord() {
+  // Indique explicitement a Next.js 16 (Cache Components) que ce composant
+  // s'execute a chaque requete utilisateur reelle et ne doit pas etre pre-rendu
+  await connection();
+
   const supabase = await createClient();
 
   // Verification de l'identite cote serveur
