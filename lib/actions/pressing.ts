@@ -1,57 +1,42 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
+import { COOKIE_PRESSING_ID } from "@/lib/espace";
+import { normaliserTelephone } from "@/lib/telephone";
+import { validerChaine } from "@/lib/validation";
 
 export interface EtatPressing {
   erreur: string | null;
-}
-
-function validerEtFormaterTelephone(
-  tel: string,
-): { valide: boolean; valeur: string | null } {
-  const brut = tel.trim();
-  if (!brut) {
-    return { valide: true, valeur: null };
-  }
-  // Nettoyer les espaces, tirets et points
-  const nettoye = brut.replace(/[\s.-]/g, "");
-  // Format ivoirien : 10 chiffres commencant par 0, avec ou sans indicatif +225
-  const regex = /^(?:\+225)?0\d{9}$/;
-  if (regex.test(nettoye)) {
-    return { valide: true, valeur: nettoye };
-  }
-  return { valide: false, valeur: null };
 }
 
 export async function creerPressing(
   _etatPrecedent: EtatPressing,
   formData: FormData,
 ): Promise<EtatPressing> {
-  const nom = (formData.get("nom") as string)?.trim() ?? "";
-  const ville = (formData.get("ville") as string)?.trim() ?? "";
-  const telephoneBrut = (formData.get("telephone") as string) ?? "";
+  const nomBrut = formData.get("nom");
+  const villeBrut = formData.get("ville");
+  const telephoneBrut = (formData.get("telephone") as string)?.trim() || "";
 
-  if (nom.length < 2 || nom.length > 100) {
-    return {
-      erreur: "Le nom du pressing doit contenir entre 2 et 100 caracteres.",
-    };
+  const valNom = validerChaine(nomBrut, "Nom du pressing", 2, 100);
+  if (!valNom.valide) {
+    return { erreur: valNom.erreur! };
   }
 
-  if (ville.length < 2 || ville.length > 100) {
-    return {
-      erreur: "La ville doit contenir entre 2 et 100 caracteres.",
-    };
+  const valVille = validerChaine(villeBrut, "Ville", 2, 100);
+  if (!valVille.valide) {
+    return { erreur: valVille.erreur! };
   }
 
-  const { valide, valeur: telephone } =
-    validerEtFormaterTelephone(telephoneBrut);
-
-  if (!valide) {
-    return {
-      erreur:
-        "Numero de telephone invalide. Format attendu : 10 chiffres (ex : 0701020304 ou +225 0701020304).",
-    };
+  let telephoneNormalise: string | null = null;
+  if (telephoneBrut) {
+    const valTel = normaliserTelephone(telephoneBrut);
+    if (!valTel.valide) {
+      return { erreur: valTel.erreur! };
+    }
+    telephoneNormalise = valTel.telephone!;
   }
 
   const supabase = await createClient();
@@ -67,9 +52,9 @@ export async function creerPressing(
   }
 
   const { error } = await supabase.rpc("creer_pressing", {
-    p_nom: nom,
-    p_ville: ville,
-    p_telephone: telephone,
+    p_nom: valNom.valeur!,
+    p_ville: valVille.valeur!,
+    p_telephone: telephoneNormalise,
   });
 
   if (error) {
@@ -91,4 +76,42 @@ export async function creerPressing(
   }
 
   redirect("/tableau-de-bord");
+}
+
+/**
+ * Change le pressing actif de l'utilisateur.
+ * Vérifie systématiquement l'appartenance dans la base de données.
+ */
+export async function changerPressingActif(nouveauId: string): Promise<void> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/connexion");
+  }
+
+  // Verification stricte de l'appartenance
+  const { data: membre } = await supabase
+    .from("membres")
+    .select("pressing_id")
+    .eq("utilisateur_id", user.id)
+    .eq("pressing_id", nouveauId)
+    .maybeSingle();
+
+  if (membre) {
+    const cookieStore = await cookies();
+    cookieStore.set(COOKIE_PRESSING_ID, nouveauId, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+    });
+  }
+
+  revalidatePath("/tableau-de-bord");
+  revalidatePath("/tarifs");
+  revalidatePath("/clients");
 }

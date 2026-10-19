@@ -2,7 +2,12 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const ROUTES_PROTEGEES = ["/tableau-de-bord", "/creer-pressing"];
+const ROUTES_PROTEGEES = [
+  "/tableau-de-bord",
+  "/creer-pressing",
+  "/tarifs",
+  "/clients",
+];
 
 export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
