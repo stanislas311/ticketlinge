@@ -70,8 +70,13 @@ export async function inscription(
     };
   }
 
+  const suivant = assainirCheminRelatif(formData.get("suivant"));
+
   // Si Supabase renvoie une session (confirmation par e-mail desactivee)
   if (data?.session) {
+    if (suivant) {
+      redirect(suivant);
+    }
     redirect("/creer-pressing");
   }
 

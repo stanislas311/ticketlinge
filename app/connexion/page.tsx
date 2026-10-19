@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { connection } from "next/server";
 import type { Metadata } from "next";
+import { validerCheminRetour } from "@/lib/invitation";
 import { FormulaireConnexion } from "./formulaire-connexion";
 
 export const metadata: Metadata = {
@@ -19,8 +20,7 @@ async function ContenuFormulaireConnexion({
 }) {
   await connection();
   const parametres = await searchParams;
-  const suivant =
-    typeof parametres.suivant === "string" ? parametres.suivant : undefined;
+  const suivant = validerCheminRetour(parametres.suivant) ?? undefined;
   const erreurCode =
     typeof parametres.erreur === "string" ? parametres.erreur : undefined;
 

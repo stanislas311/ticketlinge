@@ -7,6 +7,7 @@ const ROUTES_PROTEGEES = [
   "/creer-pressing",
   "/tarifs",
   "/clients",
+  "/equipe",
 ];
 
 export async function proxy(request: NextRequest) {
