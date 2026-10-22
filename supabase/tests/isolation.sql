@@ -217,7 +217,8 @@ begin
 
   -- B cree un client dans son propre pressing B
   insert into public.clients (pressing_id, nom, telephone)
-  values ((select id from public.pressings where nom = 'Pressing B'), 'Client B1', '+2250202020202');
+  values ((select id from public.pressings where nom = 'Pressing B'), 'Client B1', '+2250202020202')
+  returning id into v_client_B1;
 
   perform pg_temp.tester(
     '08. B ne peut pas modifier le pressing_id d''un client',
@@ -473,7 +474,6 @@ begin
 
   -- Preparation des identifiants necessaires
   select id into v_client_A1 from public.clients where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and telephone = '+2250101010101';
-  select id into v_client_B1 from public.clients where telephone = '+2250202020202';
   select id into v_prest_chemise_A from public.prestations where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and article = 'Chemise';
   select id into v_prest_pantalon_A from public.prestations where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and article = 'Pantalon';
 
