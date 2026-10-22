@@ -35,6 +35,9 @@ begin
     if p_attendu in ('succes', 'erreur') then
       execute p_sql;
       v_obtenu := 'succes';
+    elsif p_attendu = 'aucune table' then
+      execute p_sql into v_obtenu;
+      v_obtenu := coalesce(v_obtenu, 'aucune table');
     else
       execute p_sql into v_count;
       v_obtenu := coalesce(v_count::text, '0');
@@ -596,6 +599,7 @@ begin
   );
 
   -- 47-49. Isolation : B ne voit aucun depot, article ni historique de A
+  perform set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
   perform pg_temp.tester(
     '47. B ne voit aucun depot du pressing A',
     $sql$select count(*) from public.depots where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
@@ -610,6 +614,41 @@ begin
     '49. B ne voit aucun historique du pressing A',
     $sql$select count(*) from public.depot_historique where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
     '0'
+  );
+  perform pg_temp.tester(
+    '49a. B voit son depot',
+    format($sql$select count(*) from public.depots where id = '%s' and pressing_id = (select id from public.pressings where nom = 'Pressing B')$sql$, v_depot_id_B),
+    '1'
+  );
+  perform pg_temp.tester(
+    '49b. B voit son article de depot',
+    format($sql$select count(*) from public.depot_articles where depot_id = '%s' and pressing_id = (select id from public.pressings where nom = 'Pressing B')$sql$, v_depot_id_B),
+    '1'
+  );
+  perform pg_temp.tester(
+    '49c. B voit son historique de depot',
+    format($sql$select count(*) from public.depot_historique where depot_id = '%s' and pressing_id = (select id from public.pressings where nom = 'Pressing B')$sql$, v_depot_id_B),
+    '1'
+  );
+
+  perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
+  perform pg_temp.tester(
+    '49d. Le proprietaire A voit ses deux depots',
+    format($sql$select count(*) from public.depots where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and id in ('%s', '%s')$sql$, v_depot_id_1, v_depot_id_2),
+    '2'
+  );
+
+  perform pg_temp.tester(
+    '49e. Toutes les tables publiques ont RLS activee',
+    $sql$
+      select coalesce(string_agg(c.relname, ', ' order by c.relname), 'aucune table')
+      from pg_catalog.pg_class c
+      join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public'
+        and c.relkind in ('r', 'p')
+        and not c.relrowsecurity
+    $sql$,
+    'aucune table'
   );
 
   -- 50-52. Ecritures directes interdites
