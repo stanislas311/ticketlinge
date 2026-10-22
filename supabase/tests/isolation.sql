@@ -485,9 +485,10 @@ begin
 
   -- Prestation inactive dans A
   perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
-  insert into public.prestations (pressing_id, article, service, prix_xof, actif)
-  values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Costume Inactif', 'Complet', 5000, false)
+  insert into public.prestations (pressing_id, article, service, prix_xof)
+  values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Costume Inactif', 'Complet', 5000)
   returning id into v_prest_inactive_A;
+  update public.prestations set actif = false where id = v_prest_inactive_A;
 
   -- 40. Un receptionniste de A cree un depot avec succes
   perform set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated"}', true);
