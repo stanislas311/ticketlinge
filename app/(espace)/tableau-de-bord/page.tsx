@@ -3,6 +3,11 @@ import Link from "next/link";
 import { connection } from "next/server";
 import type { Metadata } from "next";
 import { obtenirContexteEspace, libelleRole } from "@/lib/espace";
+import { createClient } from "@/lib/supabase/server";
+import {
+  dateAbidjanVersValeurSaisie,
+  heureAbidjanVersUtcIso,
+} from "@/lib/depots";
 
 export const metadata: Metadata = {
   title: "Tableau de bord - Ticketlinge",
@@ -12,6 +17,33 @@ async function ContenuTableauDeBord() {
   await connection();
   const contexte = await obtenirContexteEspace();
   const { pressingActif, roleActif, adhesions } = contexte;
+  const maintenant = new Date();
+  const debutLocal = dateAbidjanVersValeurSaisie(maintenant).slice(0, 10);
+  const [annee, mois, jour] = debutLocal.split("-").map(Number);
+  const lendemain = new Date(Date.UTC(annee, mois - 1, jour + 1))
+    .toISOString()
+    .slice(0, 10);
+  const debutJour = heureAbidjanVersUtcIso(`${debutLocal}T00:00`);
+  const debutLendemain = heureAbidjanVersUtcIso(`${lendemain}T00:00`);
+  const supabase = await createClient();
+  const [depotsJour, depotsEnRetard] = await Promise.all([
+    supabase
+      .from("depots")
+      .select("id", { count: "exact", head: true })
+      .eq("pressing_id", pressingActif.id)
+      .gte("date_depot", debutJour)
+      .lt("date_depot", debutLendemain),
+    supabase
+      .from("depots")
+      .select("id", { count: "exact", head: true })
+      .eq("pressing_id", pressingActif.id)
+      .lt("date_retrait_prevue", maintenant.toISOString())
+      .neq("statut", "livre"),
+  ]);
+  const erreurDepots =
+    depotsJour.error || depotsEnRetard.error
+      ? "Les indicateurs de depots seront disponibles apres l'application de la migration SQL."
+      : null;
 
   return (
     <div className="space-y-8">
@@ -54,6 +86,31 @@ async function ContenuTableauDeBord() {
           </div>
         )}
       </div>
+
+      <section aria-label="Indicateurs des depots" className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Link
+          href="/depots"
+          className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs transition hover:border-[#0E5A6B]"
+        >
+          <p className="text-sm font-medium text-zinc-600">Depots aujourd&apos;hui</p>
+          {erreurDepots ? (
+            <p className="mt-2 text-xs text-amber-800">{erreurDepots}</p>
+          ) : (
+            <p className="mt-1 text-3xl font-bold text-zinc-900">{depotsJour.count ?? 0}</p>
+          )}
+        </Link>
+        <Link
+          href="/depots"
+          className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs transition hover:border-[#0E5A6B]"
+        >
+          <p className="text-sm font-medium text-zinc-600">Retraits en retard</p>
+          {erreurDepots ? (
+            <p className="mt-2 text-xs text-amber-800">{erreurDepots}</p>
+          ) : (
+            <p className="mt-1 text-3xl font-bold text-zinc-900">{depotsEnRetard.count ?? 0}</p>
+          )}
+        </Link>
+      </section>
 
       {/* Fiche pressing actif */}
       <div className="rounded-lg border border-zinc-200 bg-white p-6 shadow-xs">

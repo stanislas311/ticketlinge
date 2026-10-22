@@ -8,6 +8,7 @@ const ROUTES_PROTEGEES = [
   "/tarifs",
   "/clients",
   "/equipe",
+  "/depots",
 ];
 
 export async function proxy(request: NextRequest) {

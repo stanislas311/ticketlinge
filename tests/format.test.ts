@@ -14,9 +14,8 @@ describe("formaterPrixXOF", () => {
     expect(resultat.replace(/\s/g, " ")).toContain("1 500");
   });
 
-  it("arrondit à l'entier et refuse les décimales", () => {
-    const resultat = formaterPrixXOF(2500.4);
-    expect(resultat.replace(/\s/g, " ")).toContain("2 500");
+  it("refuse les montants decimaux", () => {
+    expect(() => formaterPrixXOF(2500.4)).toThrow();
   });
 
   it("rejette les montants négatifs", () => {

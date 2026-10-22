@@ -62,6 +62,25 @@ export function Navigation({ contexte }: NavigationProps) {
       ),
     },
     {
+      href: "/depots",
+      label: "Depots",
+      icon: (
+        <svg
+          className="h-5 w-5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M6 3h12v18l-2-1.5L12 21l-4-1.5L6 21V3Z" />
+          <path d="M9 8h6M9 12h6M9 16h3" />
+        </svg>
+      ),
+    },
+    {
       href: "/tarifs",
       label: "Tarifs",
       icon: (

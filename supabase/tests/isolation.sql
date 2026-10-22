@@ -1,4 +1,4 @@
--- Test d'isolation multi-pressings : equipe, invitations, clients, prestations et fondation.
+-- Test d'isolation multi-pressings : depots, tickets, equipe, invitations, clients, prestations et fondation.
 -- A executer dans l'editeur SQL de Supabase.
 -- Produit un tableau unique recapitulatif de l'ensemble des verifications.
 -- La derniere instruction annule toutes les donnees de test (rollback).
@@ -29,6 +29,7 @@ declare
   v_count bigint;
   v_state text;
   v_msg text;
+  v_erreur boolean := false;
 begin
   begin
     if p_attendu in ('succes', 'erreur') then
@@ -39,19 +40,25 @@ begin
       v_obtenu := coalesce(v_count::text, '0');
     end if;
   exception when others then
+    v_erreur := true;
     get stacked diagnostics
       v_state = returned_sqlstate,
       v_msg = message_text;
 
-    if p_attendu = 'erreur' then
-      v_obtenu := 'erreur';
-    else
-      v_obtenu := v_state || ': ' || v_msg;
-    end if;
+    v_obtenu := v_state || ': ' || v_msg;
   end;
 
   insert into test_resultats (verification, attendu, obtenu, ok)
-  values (p_nom, p_attendu, v_obtenu, (v_obtenu = p_attendu));
+  values (
+    p_nom,
+    p_attendu,
+    v_obtenu,
+    case
+      when p_attendu = 'erreur' then v_erreur
+      when p_attendu = 'succes' then not v_erreur and v_obtenu = 'succes'
+      else not v_erreur and v_obtenu = p_attendu
+    end
+  );
 end;
 $$;
 
@@ -87,11 +94,23 @@ begin
 end;
 $$;
 
+create or replace function pg_temp.forcer_statut_depot(p_depot uuid, p_statut public.statut_depot)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.depots set statut = p_statut where id = p_depot;
+end;
+$$;
+
 grant all on test_resultats to authenticated;
 grant all on sequence test_resultats_id_seq to authenticated;
 grant execute on function pg_temp.tester(text, text, text) to authenticated;
 grant execute on function pg_temp.trouver_id_invitation(text) to authenticated;
 grant execute on function pg_temp.forcer_expiration_invitation(text) to authenticated;
+grant execute on function pg_temp.forcer_statut_depot(uuid, public.statut_depot) to authenticated;
 
 -- 3. Preparation des donnees par le superutilisateur
 insert into auth.users (id, email) values
@@ -121,6 +140,22 @@ declare
   v_jeton_expire text;
   v_jeton_revoque text;
   v_id_invitation_revoque uuid;
+
+  -- Variables pour les tests de depots
+  v_client_A1 uuid;
+  v_client_B1 uuid;
+  v_client_inactif_A uuid;
+  v_prest_chemise_A uuid;
+  v_prest_pantalon_A uuid;
+  v_prest_veste_B uuid;
+  v_prest_inactive_A uuid;
+  v_depot_id_1 uuid;
+  v_num_ticket_1 text;
+  v_depot_id_2 uuid;
+  v_depot_id_fusion uuid;
+  v_num_ticket_2 text;
+  v_depot_id_B uuid;
+  v_num_ticket_B text;
 begin
   -- B cree son pressing B via creer_pressing
   perform set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
@@ -147,6 +182,11 @@ begin
   perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
   insert into public.clients (pressing_id, nom, telephone)
   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Client A1', '+2250101010101');
+
+  insert into public.clients (pressing_id, nom, telephone)
+  values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Client Inactif', '+2250101010102')
+  returning id into v_client_inactif_A;
+  update public.clients set actif = false where id = v_client_inactif_A;
 
   insert into public.prestations (pressing_id, article, service, prix_xof)
   values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Chemise', 'Lavage', 1500);
@@ -296,10 +336,8 @@ begin
   );
 
   -- 24. Un utilisateur d'un autre pressing ne peut ni lister ni revoquer les invitations du pressing A
-  -- A cree une invitation specifique pour ce test
   perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
   v_jeton_revoque := public.creer_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'receptionniste');
-  -- Recuperation certaine de l'identifiant associe a v_jeton_revoque grace a son empreinte unique
   v_id_invitation_revoque := pg_temp.trouver_id_invitation(v_jeton_revoque);
 
   perform set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
@@ -426,6 +464,272 @@ begin
   perform pg_temp.tester(
     '39. jeton_hash n''est lisible par personne',
     $sql$select jeton_hash from public.invitations limit 1$sql$,
+    'erreur'
+  );
+
+  -- =========================================================================
+  -- VERIFICATIONS DEPOTS DE LINGE ET TICKETS
+  -- =========================================================================
+
+  -- Preparation des identifiants necessaires
+  select id into v_client_A1 from public.clients where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and telephone = '+2250101010101';
+  select id into v_client_B1 from public.clients where telephone = '+2250202020202';
+  select id into v_prest_chemise_A from public.prestations where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and article = 'Chemise';
+  select id into v_prest_pantalon_A from public.prestations where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and article = 'Pantalon';
+
+  -- Prestation dans B
+  perform set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
+  insert into public.prestations (pressing_id, article, service, prix_xof)
+  values ((select id from public.pressings where nom = 'Pressing B'), 'Veste B', 'Lavage', 2500)
+  returning id into v_prest_veste_B;
+
+  -- Prestation inactive dans A
+  perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
+  insert into public.prestations (pressing_id, article, service, prix_xof, actif)
+  values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Costume Inactif', 'Complet', 5000, false)
+  returning id into v_prest_inactive_A;
+
+  -- 40. Un receptionniste de A cree un depot avec succes
+  perform set_config('request.jwt.claims', '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated"}', true);
+  select depot_id, numero_ticket into v_depot_id_1, v_num_ticket_1
+  from public.creer_depot(
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    v_client_A1,
+    now() + interval '2 days',
+    jsonb_build_array(
+      jsonb_build_object('prestation_id', v_prest_chemise_A, 'quantite', 2, 'prix_xof', 10)
+    ),
+    'Prendre soin du col'
+  );
+
+  perform pg_temp.tester(
+    '40. Receptionniste cree un depot avec succes (ticket non nul)',
+    format($sql$select case when '%s' is not null and length('%s') > 0 then 1 else 0 end$sql$, v_num_ticket_1, v_num_ticket_1),
+    '1'
+  );
+
+  -- 41. Premier depot se termine par 0001
+  perform pg_temp.tester(
+    '41. Premier depot de A porte le numero 0001',
+    format($sql$select case when '%s' like '%%-0001' then 1 else 0 end$sql$, v_num_ticket_1),
+    '1'
+  );
+
+  -- 42. Total calcule correct (ignore le faux prix envoye de 10)
+  perform pg_temp.tester(
+    '42. Total calcule correct (1500 * 2 = 3000)',
+    format($sql$select total_xof from public.depots where id = '%s'$sql$, v_depot_id_1),
+    '3000'
+  );
+
+  -- 43. Copie figee de l'article et du prix
+  perform pg_temp.tester(
+    '43. Prix unitaire fige dans depot_articles',
+    format($sql$select prix_unitaire_xof from public.depot_articles where depot_id = '%s' limit 1$sql$, v_depot_id_1),
+    '1500'
+  );
+
+  -- 44. Ligne initiale d'historique creee
+  perform pg_temp.tester(
+    '44. Ligne initiale d''historique au statut depose',
+    format($sql$select count(*) from public.depot_historique where depot_id = '%s' and nouveau_statut = 'depose' and ancien_statut is null$sql$, v_depot_id_1),
+    '1'
+  );
+
+  -- 45. Deuxieme depot de A porte le numero 0002
+  perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
+  select depot_id, numero_ticket into v_depot_id_2, v_num_ticket_2
+  from public.creer_depot(
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    v_client_A1,
+    now() + interval '3 days',
+    jsonb_build_array(
+      jsonb_build_object('prestation_id', v_prest_pantalon_A, 'quantite', 1)
+    )
+  );
+
+  perform pg_temp.tester(
+    '45. Deuxieme depot de A porte le numero 0002',
+    format($sql$select case when '%s' like '%%-0002' then 1 else 0 end$sql$, v_num_ticket_2),
+    '1'
+  );
+
+  -- 46. Pressing B recoit 0001 independamment
+  perform set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
+  select depot_id, numero_ticket into v_depot_id_B, v_num_ticket_B
+  from public.creer_depot(
+    (select id from public.pressings where nom = 'Pressing B'),
+    v_client_B1,
+    now() + interval '2 days',
+    jsonb_build_array(
+      jsonb_build_object('prestation_id', v_prest_veste_B, 'quantite', 1)
+    )
+  );
+
+  perform pg_temp.tester(
+    '46. Pressing B recoit 0001 (compteur independant)',
+    format($sql$select case when '%s' like '%%-0001' then 1 else 0 end$sql$, v_num_ticket_B),
+    '1'
+  );
+
+  perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
+  select depot_id into v_depot_id_fusion
+  from public.creer_depot(
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    v_client_A1,
+    now() + interval '2 days',
+    jsonb_build_array(
+      jsonb_build_object('prestation_id', v_prest_chemise_A, 'quantite', 2),
+      jsonb_build_object('prestation_id', v_prest_chemise_A, 'quantite', 3)
+    )
+  );
+  perform pg_temp.tester(
+    '46a. Lignes de prestation identique fusionnees',
+    format($sql$select count(*) from public.depot_articles where depot_id = '%s' and quantite = 5$sql$, v_depot_id_fusion),
+    '1'
+  );
+  perform pg_temp.tester(
+    '46b. Fusion conserve une seule ligne',
+    format($sql$select count(*) from public.depot_articles where depot_id = '%s'$sql$, v_depot_id_fusion),
+    '1'
+  );
+
+  -- 47-49. Isolation : B ne voit aucun depot, article ni historique de A
+  perform pg_temp.tester(
+    '47. B ne voit aucun depot du pressing A',
+    $sql$select count(*) from public.depots where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+    '0'
+  );
+  perform pg_temp.tester(
+    '48. B ne voit aucun article de depot du pressing A',
+    $sql$select count(*) from public.depot_articles where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+    '0'
+  );
+  perform pg_temp.tester(
+    '49. B ne voit aucun historique du pressing A',
+    $sql$select count(*) from public.depot_historique where pressing_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$sql$,
+    '0'
+  );
+
+  -- 50-52. Ecritures directes interdites
+  perform pg_temp.tester(
+    '50. Ecriture directe interdite sur depots',
+    $sql$insert into public.depots (pressing_id, numero_ticket, client_id, total_xof, date_retrait_prevue, cree_par) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'DP-HACK', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 0, now(), '22222222-2222-2222-2222-222222222222')$sql$,
+    'erreur'
+  );
+  perform pg_temp.tester(
+    '51. Ecriture directe interdite sur depot_articles',
+    $sql$insert into public.depot_articles (pressing_id, depot_id, article, service, prix_unitaire_xof, quantite) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'X', 'Y', 100, 1)$sql$,
+    'erreur'
+  );
+  perform pg_temp.tester(
+    '52. Ecriture directe interdite sur depot_historique',
+    $sql$insert into public.depot_historique (pressing_id, depot_id, nouveau_statut, par) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'depose', '22222222-2222-2222-2222-222222222222')$sql$,
+    'erreur'
+  );
+
+  -- 53. Client d'un autre pressing refuse
+  perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
+  perform pg_temp.tester(
+    '53. Client d''un autre pressing refuse',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 1)))$sql$, v_client_B1, v_prest_chemise_A),
+    'erreur'
+  );
+
+  -- 54. Prestation d'un autre pressing refusee
+  perform pg_temp.tester(
+    '54. Prestation d''un autre pressing refusee',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 1)))$sql$, v_client_A1, v_prest_veste_B),
+    'erreur'
+  );
+
+  -- 55. Prestation inactive refusee
+  perform pg_temp.tester(
+    '55. Prestation inactive refusee',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 1)))$sql$, v_client_A1, v_prest_inactive_A),
+    'erreur'
+  );
+  perform pg_temp.tester(
+    '55a. Client inactif refuse',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 1)))$sql$, v_client_inactif_A, v_prest_chemise_A),
+    'erreur'
+  );
+
+  -- 56-58. Quantites invalides refusees
+  perform pg_temp.tester(
+    '56. Quantite de 0 refusee',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 0)))$sql$, v_client_A1, v_prest_chemise_A),
+    'erreur'
+  );
+  perform pg_temp.tester(
+    '57. Quantite de 1000 refusee',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 1000)))$sql$, v_client_A1, v_prest_chemise_A),
+    'erreur'
+  );
+  perform pg_temp.tester(
+    '58. Quantite non entiere refusee',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 2.5)))$sql$, v_client_A1, v_prest_chemise_A),
+    'erreur'
+  );
+
+  -- 59-60. Tableau invalide (vide ou > 50 lignes)
+  perform pg_temp.tester(
+    '59. Tableau vide refuse',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', '[]'::jsonb)$sql$, v_client_A1),
+    'erreur'
+  );
+  perform pg_temp.tester(
+    '60. Tableau de plus de 50 lignes refuse',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '2 days', (select jsonb_agg(jsonb_build_object('prestation_id', '%s', 'quantite', 1)) from generate_series(1, 51)))$sql$, v_client_A1, v_prest_chemise_A),
+    'erreur'
+  );
+
+  -- 61-62. Changer le prix de la prestation ne modifie pas le ticket fige
+  update public.prestations set prix_xof = 9999 where id = v_prest_chemise_A;
+  perform pg_temp.tester(
+    '61. Prix fige inchange dans le ticket existant',
+    format($sql$select prix_unitaire_xof from public.depot_articles where depot_id = '%s' limit 1$sql$, v_depot_id_1),
+    '1500'
+  );
+  perform pg_temp.tester(
+    '62. Total du ticket existant inchange',
+    format($sql$select total_xof from public.depots where id = '%s'$sql$, v_depot_id_1),
+    '3000'
+  );
+
+  -- 63-64. Dates de retrait invalides
+  perform pg_temp.tester(
+    '63. Date de retrait dans le passe refusee',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() - interval '1 hour', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 1)))$sql$, v_client_A1, v_prest_chemise_A),
+    'erreur'
+  );
+  perform pg_temp.tester(
+    '64. Date de retrait au-dela de 365 jours refusee',
+    format($sql$select public.creer_depot('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '%s', now() + interval '366 days', jsonb_build_array(jsonb_build_object('prestation_id', '%s', 'quantite', 1)))$sql$, v_client_A1, v_prest_chemise_A),
+    'erreur'
+  );
+
+  -- 65. modifier_date_retrait fonctionne sur depot depose
+  perform pg_temp.tester(
+    '65. modifier_date_retrait fonctionne sur depot depose',
+    format($sql$select public.modifier_date_retrait('%s', now() + interval '10 days')$sql$, v_depot_id_1),
+    'succes'
+  );
+
+  -- 66. modifier_date_retrait refusee pour utilisateur d'un autre pressing
+  perform set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
+  perform pg_temp.tester(
+    '66. modifier_date_retrait refusee a un pressing etranger',
+    format($sql$select public.modifier_date_retrait('%s', now() + interval '10 days')$sql$, v_depot_id_1),
+    'erreur'
+  );
+
+  -- 67. modifier_date_retrait refusee sur depot passe en 'livre'
+  perform pg_temp.forcer_statut_depot(v_depot_id_1, 'livre');
+  perform set_config('request.jwt.claims', '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}', true);
+  perform pg_temp.tester(
+    '67. modifier_date_retrait refusee sur depot livre',
+    format($sql$select public.modifier_date_retrait('%s', now() + interval '12 days')$sql$, v_depot_id_1),
     'erreur'
   );
 
